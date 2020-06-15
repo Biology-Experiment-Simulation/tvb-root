@@ -41,6 +41,8 @@ from cherrypy.lib.sessions import RamSession
 from tvb.adapters.creators.stimulus_creator import RegionStimulusCreator
 from tvb.adapters.datatypes.db.patterns import StimuliRegionIndex
 from tvb.adapters.datatypes.db.surface import SurfaceIndex
+from tvb.adapters.simulator.coupling_forms import get_form_for_coupling
+from tvb.adapters.simulator.model_forms import get_form_for_model
 from tvb.adapters.simulator.simulator_adapter import SimulatorAdapterModel, CortexViewModel
 from tvb.adapters.uploaders.sensors_importer import SensorsImporterModel
 from tvb.core.entities.file.files_helper import FilesHelper
@@ -316,6 +318,24 @@ class TestSimulationController(BaseTransactionalControllerTest):
             self.simulator_controller.set_monitors(**self.sess_mock._data)
 
         assert isinstance(self.session_stored_simulator.monitors[0], TemporalAverage), 'Monitor class is incorrect.'
+
+    def test_multiple_monitors(self):
+        self.sess_mock['monitors'] = ['Temporal average', 'EEG', 'MEG']
+
+        for monitor in self.session_stored_simulator.monitors:
+            monitor.variables_of_interest = numpy.array([0])
+
+        self.session_stored_simulator.model.variables_of_interest = ['V', 'W']
+
+        with patch('cherrypy.session', self.sess_mock, create=True):
+            common.add2session(common.KEY_SIMULATOR_CONFIG, self.session_stored_simulator)
+            common.add2session(common.KEY_BURST_CONFIG, BurstConfiguration(self.test_project.id))
+            self.simulator_controller.set_monitors(**self.sess_mock._data)
+
+        assert isinstance(self.session_stored_simulator.monitors[0], TemporalAverage),\
+            'First monitor class is incorrect.'
+        assert isinstance(self.session_stored_simulator.monitors[1], EEG), 'Second monitor class is incorrect.'
+        assert isinstance(self.session_stored_simulator.monitors[2], MEG), 'Third monitor class is incorrect.'
 
     def test_set_monitor_params(self):
         self.session_stored_simulator.model.variables_of_interest = ('V', 'W', 'V - W')
@@ -668,7 +688,7 @@ class TestSimulationController(BaseTransactionalControllerTest):
         assert not is_simulator_copy, "Simulator Copy Flag should be False!"
         assert last_loaded_form_url == '/burst/setup_pse', "Incorrect last form URL!"
 
-    def test_launch_simulation_with_default_parameters(self):
+    def test_launch_simulation_with(self):
         self.sess_mock['input_simulation_name_id'] = 'HappySimulation'
         self.sess_mock['simulation_length'] = '10'
         launch_mode = 'new'
@@ -679,3 +699,40 @@ class TestSimulationController(BaseTransactionalControllerTest):
             common.add2session(common.KEY_BURST_CONFIG, burst_config)
             common.add2session(common.KEY_SIMULATOR_CONFIG, self.session_stored_simulator)
             self.simulator_controller.launch_simulation(launch_mode, **self.sess_mock._data)
+
+    def test_setup_pse(self):
+        self.sess_mock['input_simulation_name_id'] = 'simulation_1'
+        self.sess_mock['simulation_length'] = '1000'
+
+        burst_config = BurstConfiguration(self.test_project.id)
+
+        with patch('cherrypy.session', self.sess_mock, create=True):
+            common.add2session(common.KEY_BURST_CONFIG, burst_config)
+            common.add2session(common.KEY_SIMULATOR_CONFIG, self.session_stored_simulator)
+            self.simulator_controller.setup_pse(**self.sess_mock._data)
+
+        assert burst_config.name == 'simulation_1', "Incorrect simulation name!"
+        assert self.session_stored_simulator.simulation_length == 1000, "Incorrect simulation length!"
+
+    def test_set_pse_params(self):
+        self.sess_mock['pse_param1'] = 'model.a'
+        self.sess_mock['pse_param2'] = 'model.c'
+
+        self.simulator_controller.range_parameters.coupling_parameters = get_form_for_coupling(type(
+            self.session_stored_simulator.coupling))().get_range_parameters()
+        self.simulator_controller.range_parameters.model_parameters = get_form_for_model(type(
+            self.session_stored_simulator.model))().get_range_parameters()
+
+        burst_config = BurstConfiguration(self.test_project.id)
+
+        with patch('cherrypy.session', self.sess_mock, create=True):
+            common.add2session(common.KEY_BURST_CONFIG, burst_config)
+            common.add2session(common.KEY_SIMULATOR_CONFIG, self.session_stored_simulator)
+            self.simulator_controller.set_pse_params(**self.sess_mock._data)
+
+        assert eval(burst_config.range1)[0] == 'model.a', "pse_param1 was not set correctly!"
+        assert eval(burst_config.range2)[0] == 'model.c', "pse_param2 was not set correctly!"
+
+
+
+
