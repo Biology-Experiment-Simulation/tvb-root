@@ -391,8 +391,8 @@ class SimulatorController(BurstBaseController):
             rendering_rules.is_simulation_copy = is_simulator_copy
             return rendering_rules.to_dict()
 
-        # TODO: work-around this situation: surf_index filter
-        rm_fragment = SimulatorRMFragment('', common.get_current_project().id, surface_index)
+        rm_fragment = SimulatorRMFragment('', common.get_current_project().id, surface_index,
+                                          session_stored_simulator.connectivity)
         rm_fragment.fill_from_trait(session_stored_simulator)
 
         rendering_rules.form = rm_fragment

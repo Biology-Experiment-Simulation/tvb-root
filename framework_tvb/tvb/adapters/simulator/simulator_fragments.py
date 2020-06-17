@@ -74,12 +74,14 @@ class SimulatorSurfaceFragment(ABCAdapterForm):
 
 
 class SimulatorRMFragment(ABCAdapterForm):
-    def __init__(self, prefix='', project_id=None, surface_index=None):
+    def __init__(self, prefix='', project_id=None, surface_index=None, connectivity_gid=None):
         super(SimulatorRMFragment, self).__init__(prefix, project_id)
         conditions = None
         if surface_index:
-            conditions = FilterChain(fields=[FilterChain.datatype + '.fk_surface_gid'], operations=["=="],
-                                     values=[str(surface_index.gid)])
+            conditions = FilterChain(fields=[FilterChain.datatype + '.fk_surface_gid',
+                                             FilterChain.datatype + '.fk_connectivity_gid'],
+                                     operations=["==", "=="],
+                                     values=[str(surface_index.gid), connectivity_gid.hex])
         self.rm = DataTypeSelectField(RegionMappingIndex, self, name='region_mapping', required=True,
                                       label=Cortex.region_mapping_data.label,
                                       doc=Cortex.region_mapping_data.doc, conditions=conditions)
