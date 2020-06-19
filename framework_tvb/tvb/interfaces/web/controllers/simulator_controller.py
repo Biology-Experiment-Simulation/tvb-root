@@ -698,11 +698,11 @@ class SimulatorController(BurstBaseController):
         return first_monitor_index, last_loaded_fragment_url
 
     @staticmethod
-    def _check_cortical_for_spatial_average(connectivity, form):
+    def _check_cortical_for_spatial_average(connectivity, form, is_surface_simulation):
         connectivity_index = ABCAdapter.load_entity_by_gid(connectivity)
         connectivity = h5.load_from_index(connectivity_index)
 
-        if connectivity.cortical is None or len(set(connectivity.cortical)) != 2:
+        if is_surface_simulation is False and (connectivity.cortical is None or len(set(connectivity.cortical)) != 2):
             form.default_mask.disabled = True
 
     @cherrypy.expose
@@ -737,7 +737,8 @@ class SimulatorController(BurstBaseController):
         form.fill_from_trait(monitor)
 
         if isinstance(monitor, SpatialAverage):
-            self._check_cortical_for_spatial_average(session_stored_simulator.connectivity, form)
+            self._check_cortical_for_spatial_average(session_stored_simulator.connectivity, form,
+                                                     session_stored_simulator.is_surface_simulation)
 
         default_simulation_name, simulation_number = BurstService.prepare_name(session_stored_burst,
                                                                                common.get_current_project().id)
