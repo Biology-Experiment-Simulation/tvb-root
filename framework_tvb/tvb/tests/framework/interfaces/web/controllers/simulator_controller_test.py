@@ -46,10 +46,11 @@ from tvb.adapters.simulator.simulator_adapter import SimulatorAdapterModel, Cort
 from tvb.adapters.uploaders.sensors_importer import SensorsImporterModel
 from tvb.core.entities.file.files_helper import FilesHelper
 from tvb.core.entities.file.simulator.simulator_h5 import SimulatorH5
+from tvb.core.entities.file.simulator.view_model import CortexViewModel, SimulatorAdapterModel
 from tvb.core.entities.model.model_burst import BurstConfiguration
 from tvb.core.entities.storage import dao
 from tvb.core.neocom import h5
-from tvb.core.services.flow_service import FlowService
+from tvb.core.services.operation_service import OperationService
 from tvb.core.services.simulator_serializer import SimulatorSerializer
 from tvb.datatypes.equations import FirstOrderVolterra, GeneralizedSigmoid, TemporalApplicableEquation, Linear
 from tvb.datatypes.surfaces import CORTICAL
@@ -224,8 +225,8 @@ class TestSimulationController(BaseTransactionalControllerTest):
         view_model.temporal.parameters['a'] = 1.0
         view_model.temporal.parameters['b'] = 2.0
 
-        FlowService().fire_operation(region_stimulus_creator, self.test_user, self.test_project.id,
-                                     view_model=view_model)
+        OperationService().fire_operation(region_stimulus_creator, self.test_user, self.test_project.id,
+                                          view_model=view_model)
         region_stimulus_index = TestFactory.get_entity(self.test_project, StimuliRegionIndex)
 
         self.sess_mock['region_stimuli'] = UUID(region_stimulus_index.gid)

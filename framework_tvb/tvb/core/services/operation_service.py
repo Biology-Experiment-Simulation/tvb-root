@@ -43,19 +43,17 @@ import zipfile
 import sys
 from copy import copy
 from cgi import FieldStorage
-from tvb.adapters.simulator.simulator_adapter import SimulatorAdapter
-from tvb.adapters.datatypes.db.time_series import TimeSeriesIndex
-from tvb.adapters.analyzers.metrics_group_timeseries import TimeseriesMetricsAdapter, TimeseriesMetricsAdapterModel, \
-    choices
 from tvb.basic.exceptions import TVBException
 from tvb.basic.neotraits.api import Range
 from tvb.basic.profile import TvbProfile
 from tvb.basic.logger.builder import get_logger
+from tvb.config import choices, MEASURE_METRICS_MODULE, MEASURE_METRICS_CLASS, MEASURE_METRICS_MODEL_CLASS
 from tvb.core.adapters import constants
 from tvb.core.adapters.abcadapter import ABCAdapter, ABCSynchronous
 from tvb.core.adapters.exceptions import LaunchException
-from tvb.core.entities.model.model_burst import PARAM_RANGE_PREFIX, RANGE_PARAMETER_1, RANGE_PARAMETER_2, \
-    BurstConfiguration
+from tvb.core.entities.load import get_class_by_name
+from tvb.core.entities.model.model_burst import PARAM_RANGE_PREFIX, RANGE_PARAMETER_1, RANGE_PARAMETER_2
+from tvb.core.entities.model.model_burst import BurstConfiguration
 from tvb.core.entities.model.model_datatype import DataTypeGroup
 from tvb.core.entities.model.model_operation import STATUS_FINISHED, STATUS_ERROR, OperationGroup, Operation
 from tvb.core.entities.storage import dao
@@ -64,8 +62,10 @@ from tvb.core.entities.file.files_helper import FilesHelper
 from tvb.core.neocom import h5
 from tvb.core.neotraits.h5 import ViewModelH5
 from tvb.core.services.burst_service import BurstService
+from tvb.core.services.project_service import ProjectService
 from tvb.core.services.backend_client import BACKEND_CLIENT
-from tvb.core.services.simulator_serializer import SimulatorSerializer
+from tvb.core.services.exceptions import OperationException
+from tvb.datatypes.time_series import TimeSeries
 
 try:
     from cherrypy._cpreqbody import Part
@@ -174,12 +174,13 @@ class OperationService:
             self.launch_operation(operation.id, True)
 
     def _prepare_metric_operation(self, sim_operation):
-        # type: (Operation) -> None
-        metric_algo = dao.get_algorithm_by_module(TimeseriesMetricsAdapter.__module__,
-                                                  TimeseriesMetricsAdapter.__name__)
-        time_series_index = dao.get_generic_entity(TimeSeriesIndex, sim_operation.id, 'fk_from_operation')[0]
+        # type: (Operation) -> Operation
+        metric_algo = dao.get_algorithm_by_module(MEASURE_METRICS_MODULE,
+                                                  MEASURE_METRICS_CLASS)
+        datatype_index = h5.REGISTRY.get_index_for_datatype(TimeSeries)
+        time_series_index = dao.get_generic_entity(datatype_index, sim_operation.id, 'fk_from_operation')[0]
 
-        view_model = TimeseriesMetricsAdapterModel()
+        view_model = get_class_by_name("{}.{}".format(MEASURE_METRICS_MODULE, MEASURE_METRICS_MODEL_CLASS))()
         view_model.time_series = time_series_index.gid
         view_model.algorithms = tuple(choices.values())
 
@@ -201,7 +202,7 @@ class OperationService:
         if metrics_datatype_group.fk_from_operation is None:
             metrics_datatype_group.fk_from_operation = metric_operation.id
 
-        OperationService._store_view_model(stored_metric_operation, sim_operation.project, view_model)
+        self._store_view_model(stored_metric_operation, sim_operation.project, view_model)
         return stored_metric_operation
 
     def prepare_operation(self, user_id, project_id, algorithm_id, category, view_model_gid, op_group, metadata,
@@ -277,7 +278,7 @@ class OperationService:
                 dao.store_entity(existing_dt_group)
 
         for operation in operations:
-            OperationService._store_view_model(operation, project, view_model)
+            self._store_view_model(operation, project, view_model)
 
         return operations, group
 
@@ -288,20 +289,6 @@ class OperationService:
         h5_file = ViewModelH5(h5_path, view_model)
         h5_file.store(view_model)
         h5_file.close()
-
-    def load_view_model(self, adapter_instance, operation):
-        storage_path = self.file_helper.get_project_folder(operation.project, str(operation.id))
-        input_gid = json.loads(operation.parameters)['gid']
-        # TODO: review location, storage_path, op params deserialization
-        if isinstance(adapter_instance, SimulatorAdapter):
-            view_model = SimulatorSerializer().deserialize_simulator(input_gid, storage_path)
-        else:
-            view_model_class = adapter_instance.get_view_model_class()
-            view_model = view_model_class()
-            h5_path = h5.path_for(storage_path, ViewModelH5, input_gid)
-            h5_file = ViewModelH5(h5_path, view_model)
-            h5_file.load_into(view_model)
-        return view_model
 
     def initiate_prelaunch(self, operation, adapter_instance, **kwargs):
         """
@@ -322,14 +309,14 @@ class OperationService:
             user_disk_space = dao.compute_user_generated_disk_size(operation.fk_launched_by)  # From kB to Bytes
             available_space = disk_space_per_user - pending_op_disk_space - user_disk_space
 
-            view_model = self.load_view_model(adapter_instance, operation)
-            result_msg, nr_datatypes = adapter_instance._prelaunch(operation, unique_id, available_space, view_model=view_model)
+            view_model = adapter_instance.load_view_model(operation)
+            result_msg, nr_datatypes = adapter_instance._prelaunch(operation, unique_id, available_space,
+                                                                   view_model=view_model)
             operation = dao.get_operation_by_id(operation.id)
-            ## Update DB stored kwargs for search purposes, to contain only valuable params (no unselected options)
-            operation.parameters = json.dumps(kwargs)
+            # Update DB stored kwargs for search purposes, to contain only valuable params (no unselected options)
             operation.mark_complete(STATUS_FINISHED)
             if nr_datatypes > 0:
-                #### Write operation meta-XML only if some result are returned
+                # Write operation meta-XML only if some result are returned
                 self.file_helper.write_operation_metadata(operation)
             dao.store_entity(operation)
             adapter_form = adapter_instance.get_form()
@@ -424,8 +411,8 @@ class OperationService:
         Create and store OperationGroup entity, or return None
         """
         # Standard ranges as accepted from UI
-        range1_values = self.get_range_values(kwargs, self._range_name(1))
-        range2_values = self.get_range_values(kwargs, self._range_name(2))
+        range1_values = self._get_range_values(kwargs, self._range_name(1))
+        range2_values = self._get_range_values(kwargs, self._range_name(2))
         available_args = self.__expand_arguments([(kwargs, None)], range1_values, self._range_name(1))
         available_args = self.__expand_arguments(available_args, range2_values, self._range_name(2))
         is_group = False
@@ -440,7 +427,7 @@ class OperationService:
         last_range_idx = 3
         ranger_name = self._range_name(last_range_idx)
         while ranger_name in kwargs:
-            values_for_range = self.get_range_values(kwargs, ranger_name)
+            values_for_range = self._get_range_values(kwargs, ranger_name)
             available_args = self.__expand_arguments(available_args, values_for_range, ranger_name)
             last_range_idx += 1
             ranger_name = self._range_name(last_range_idx)
@@ -456,7 +443,7 @@ class OperationService:
 
         return available_args, group
 
-    def get_range_values(self, kwargs, ranger_name):
+    def _get_range_values(self, kwargs, ranger_name):
         """
         For the ranger given by ranger_name look in kwargs and return
         the array with all the possible values.
@@ -512,12 +499,59 @@ class OperationService:
                 result.append((kw_new, range_new))
         return result
 
-    ##########################################################################################
-    ######## Methods related to stopping and restarting operations start here ################
-    ##########################################################################################
+    def fire_operation(self, adapter_instance, current_user, project_id, visible=True, view_model=None, **data):
+        """
+        Launch an operation, specified by AdapterInstance, for CurrentUser,
+        Current Project and a given set of UI Input Data.
+        """
+        operation_name = str(adapter_instance.__class__.__name__)
+        try:
+            self.logger.info("Starting operation " + operation_name)
+            project = dao.get_project_by_id(project_id)
 
-    def stop_operation(self, operation_id):
+            result = self.initiate_operation(current_user, project, adapter_instance, visible,
+                                             model_view=view_model, **data)
+            self.logger.info("Finished operation launch:" + operation_name)
+            return result
+
+        except TVBException as excep:
+            self.logger.exception("Could not launch operation " + operation_name +
+                                  " with the given set of input data, because: " + excep.message)
+            raise OperationException(excep.message, excep)
+        except Exception as excep:
+            self.logger.exception("Could not launch operation " + operation_name + " with the given set of input data!")
+            raise OperationException(str(excep))
+
+    @staticmethod
+    def load_operation(operation_id):
+        """ Retrieve previously stored Operation from DB, and load operation.burst attribute"""
+        operation = dao.get_operation_by_id(operation_id)
+        operation.burst = dao.get_burst_for_operation_id(operation_id)
+        return operation
+
+    @staticmethod
+    def stop_operation(operation_id, is_group=False, remove_after_stop=False):
+        # type: (int, bool, bool) -> bool
         """
-        Stop the operation given by the operation id.
+        Stop (also named Cancel) the operation given by operation_id,
+        and potentially also remove it after (with all linked data).
+        In case the Operation has a linked Burst, remove that too.
+        :param operation_id: ID for Operation (or OperationGroup) to be canceled/removed
+        :param is_group: When true stop all the operations from that group.
+        :param remove_after_stop: if True, also remove the operation(s) after stopping
+        :returns True if the stop step was successfully
         """
-        return BACKEND_CLIENT.stop_operation(int(operation_id))
+        result = False
+        if is_group:
+            op_group = ProjectService.get_operation_group_by_id(operation_id)
+            operations_in_group = ProjectService.get_operations_in_group(op_group)
+            for operation in operations_in_group:
+                result = OperationService.stop_operation(operation.id, False, remove_after_stop) or result
+        else:
+            result = BACKEND_CLIENT.stop_operation(operation_id)
+            if remove_after_stop:
+                burst_config = dao.get_burst_for_operation_id(operation_id)
+                ProjectService().remove_operation(operation_id)
+                if burst_config is not None:
+                    result = dao.remove_entity(BurstConfiguration, burst_config.id) or result
+        return result
